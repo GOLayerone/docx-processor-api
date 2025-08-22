@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+*.bak
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Local development
+Dockerfile
+.dockerignore
+.git
+.gitignore
+
+# Project specific
+temp_uploads/
+*.docx
+*.pdf

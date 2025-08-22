@@ -1,0 +1,28 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'build'
+  args: ['build', '--no-cache', '-t', 'gcr.io/$PROJECT_ID/docx-api', '.']
+  timeout: 1200s
+
+- name: 'gcr.io/cloud-builders/gcloud'
+  id: 'deploy'
+  entrypoint: 'bash'
+  args:
+    - '-c'
+    - |
+      gcloud run deploy docx-api \
+        --image gcr.io/$PROJECT_ID/docx-api \
+        --region ${_REGION} \
+        --platform managed \
+        --allow-unauthenticated \
+        --project $PROJECT_ID \
+        --set-env-vars TEMPLATE_BUCKET=${_TEMPLATE_BUCKET},DISABLE_GCP=${_DISABLE_GCP} \
+        --set-secrets ADMIN_TOKEN=ADMIN_TOKEN:latest
+
+images:
+  - 'gcr.io/$PROJECT_ID/docx-api'
+
+substitutions:
+  _REGION: 'europe-west1'
+  _TEMPLATE_BUCKET: 'docx-templates-europe-west1-layerone'
+  _DISABLE_GCP: '0'
