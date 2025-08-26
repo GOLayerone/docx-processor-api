@@ -18,32 +18,28 @@ import re
 from google.cloud import firestore
 from google.cloud import storage
 from google.api_core.exceptions import NotFound
-from PyPDF2 import PdfMerger
+from pypdf import PdfMerger
 import io
+from contextlib import asynccontextmanager
 
 # --- Configuration --- 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="API de traitement de documents Word",
-    description="API pour fusionner des données JSON dans des templates .docx",
-    version="1.2.0"
-)
-
 ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN")
 GCP_DISABLED = os.environ.get("DISABLE_GCP", "0") == "1"
 TEMPLATE_BUCKET = None
 
-# --- Initialisation des clients GCP --- 
+# --- Initialisation des clients GCP via Lifespan ---
 db: Optional[firestore.Client] = None
 STORAGE_CLIENT: Optional[storage.Client] = None
 
-@app.on_event("startup")
-def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global db, STORAGE_CLIENT, TEMPLATE_BUCKET
     if GCP_DISABLED:
         logger.warning("Mode GCP désactivé (DISABLE_GCP=1) : Firestore/Storage ne seront pas initialisés.")
+        yield
         return
     try:
         db = firestore.Client()
@@ -61,6 +57,15 @@ def startup_event():
             logger.warning("TEMPLATE_BUCKET n'est pas configuré.")
     except Exception as e:
         logger.error(f"Impossible d'initialiser le client de stockage: {e}")
+
+    yield
+
+app = FastAPI(
+    title="API de traitement de documents Word",
+    description="API pour fusionner des données JSON dans des templates .docx",
+    version="1.2.0",
+    lifespan=lifespan,
+)
 
 PLANS = {"gratuit": 50, "starter": 500, "pro": 5000, "illimite": None}
 UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), "docx_processor")
