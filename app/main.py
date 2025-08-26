@@ -21,6 +21,8 @@ from google.api_core.exceptions import NotFound
 from pypdf import PdfMerger
 import io
 from contextlib import asynccontextmanager
+from scripts.clean_docx_fragments import normalize_docx
+import zipfile
 
 # --- Configuration --- 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
@@ -110,6 +112,30 @@ def check_quota_or_raise(api_key: str):
     quota = PLANS.get(data.get("plan", "gratuit"))
     if quota is not None and data.get("quota_used", 0) >= quota:
         raise HTTPException(status_code=429, detail="Quota mensuel atteint")
+
+def _detect_tags(docx_path: str) -> List[str]:
+    """Inspecte les parties XML d'un DOCX pour détecter des balises Jinja {{var}}.
+    Retourne une liste de noms de variables détectés (unicité conservée).
+    Ceci est un best-effort basé sur regex après normalisation.
+    """
+    try:
+        found: List[str] = []
+        seen = set()
+        with zipfile.ZipFile(docx_path, 'r') as z:
+            for item in z.infolist():
+                if item.filename.startswith('word/') and item.filename.endswith('.xml'):
+                    data = z.read(item.filename)
+                    text = data.decode('utf-8', 'ignore')
+                    # Cherche {{ ... }} sans espaces obligatoires
+                    for m in re.finditer(r"\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}", text):
+                        var = m.group(1)
+                        if var not in seen:
+                            seen.add(var)
+                            found.append(var)
+        return found
+    except Exception as e:
+        logger.warning(f"Detection des balises échouée: {e}")
+        return []
 
 @firestore.transactional
 def consume_quota_transaction(transaction, key_ref):
@@ -370,8 +396,24 @@ async def process_document(
         else:
             file_path = os.path.join(session_dir, template.filename)
             with open(file_path, "wb") as buffer: shutil.copyfileobj(template.file, buffer)
+        # Normaliser les balises potentiellement fragmentées avant rendu
+        normalized_path = os.path.join(session_dir, "normalized.docx")
+        try:
+            _ = normalize_docx(file_path, normalized_path, enable_square=False)
+            effective_path = normalized_path if os.path.exists(normalized_path) else file_path
+        except Exception as e:
+            logger.warning(f"Normalisation des balises échouée, utilisation du fichier original: {e}")
+            effective_path = file_path
+
+        # Détection (logging) des balises présentes
+        detected = _detect_tags(effective_path)
+        if detected:
+            logger.info(f"Balises détectées dans le template: {detected}")
+        else:
+            logger.info("Aucune balise {{...}} détectée dans le template après normalisation.")
+
         context = json.loads(json_data)
-        doc = DocxTemplate(file_path)
+        doc = DocxTemplate(effective_path)
         doc.render(context)
         output_docx = os.path.join(session_dir, "output.docx")
         doc.save(output_docx)
