@@ -227,15 +227,38 @@ async def delete_client_template(template_id: str, request: Request):
 @app.post("/admin/templates-manager")
 async def templates_manager(
     req: Request,
-    action: str = Form(...),
+    action: str = Form(None),
     client_api_key: str = Form(None),
     template_id: str = Form(None),
     template: UploadFile = File(None),
     full_path: str = Form(None),
+    dry_run: bool = Form(False),
 ):
     admin_required(req)
     _ensure_gcs_ready()
     bucket = TEMPLATE_BUCKET
+    # Supporte aussi application/json en plus du multipart/form-data
+    try:
+        ctype = req.headers.get("content-type", "").lower()
+        if "application/json" in ctype:
+            body = await req.json()
+            if isinstance(body, dict):
+                action = body.get("action", action)
+                client_api_key = body.get("client_api_key", client_api_key)
+                template_id = body.get("template_id", template_id)
+                full_path = body.get("full_path", full_path)
+                # Convertir dry_run potentiellement string → bool
+                if "dry_run" in body:
+                    v = body.get("dry_run")
+                    if isinstance(v, str):
+                        dry_run = v.strip().lower() in ("1", "true", "yes", "on")
+                    else:
+                        dry_run = bool(v)
+    except Exception:
+        # en cas d'erreur de parsing JSON, on continue avec les valeurs form
+        pass
+    if not action:
+        raise HTTPException(400, "'action' requis (multipart/form-data ou application/json)")
     if action == "list_all":
         # Construire une liste (pas un dict) afin d'éviter les collisions par template_id
         templates_list = []
@@ -301,6 +324,25 @@ async def templates_manager(
             "client_name": client_name,
             "templates": [{"id": b.name.split('/')[-1][:-5], "size": b.size} for b in blobs]
         }
+    if action == "delete_client_all":
+        # Supprime tous les templates pour un client donné (tous les blobs sous prefix client_api_key/)
+        deleted = []
+        total = 0
+        # On matérialise la liste pour éviter les itérateurs consommables
+        blobs = list(bucket.list_blobs(prefix=f"{client_api_key}/"))
+        if not blobs:
+            return {"status": "ok", "deleted_count": 0, "deleted": []}
+        for b in blobs:
+            total += 1
+            if not dry_run:
+                try:
+                    b.delete()
+                    deleted.append(b.name)
+                except Exception as e:
+                    logger.error(f"Echec suppression blob {b.name}: {e}")
+            else:
+                deleted.append(b.name)
+        return {"status": "ok", "deleted_count": len(deleted), "dry_run": dry_run, "deleted": deleted}
     if not template_id and action in ["replace"]: raise HTTPException(400, "'template_id' requis")
     gcs_path = f"{client_api_key}/{template_id}.docx"
     blob = bucket.blob(gcs_path)
